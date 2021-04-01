@@ -1,0 +1,343 @@
+#!/bin/sh
+
+export POSIXLY_CORRECT=yes
+export LS_NUMERIC=en_US.UTF-8
+
+print_help()
+{
+	bold=$(tput bold)
+	normal=$(tput sgr0) 
+	echo "${bold}NAME${normal}"
+	echo "\ttradelog"
+	echo ""
+	echo "${bold}SYNOPSIS${normal}"
+	echo "\ttradelog [-h | --help] [FILTER] [COMMAND] [LOG [LOG2 [...]]]"
+	echo ""
+	echo "${bold}DESCRIPTION${normal}"
+	echo "\tScrypt is build to help orient in trades which are done or running on market and make easier finding between trades and sorting trades."
+	echo ""
+	echo "${bold}COMMANDS${normal}"
+	echo "\tlist-tick\t\tList of tickers."
+	echo ""
+	echo "\tprofit\t\tList of profits from closed trades."
+	echo ""
+	echo "\tpos\t\t\tList of values from currently holded positions, sort by value."
+	echo ""
+	echo "\tlast-price\t\tList of last known price for each ticker."
+	echo ""
+	echo "\thist-ord\t\tHistogram list by ticker transactions."
+	echo ""
+	echo "\tgraph-pos\t\tGraph statement of holding positions by tickers."
+	echo ""
+	echo "${bold}FILTERS${normal}"
+	echo "\t-a DATETIME\t\tShow only trades after that date (without it). Format is YYYY-MM-DD HH:MM:SS."
+	echo ""
+	echo "\t-b DATETIME\t\tShow only trades before that date (without it). Format is YYYY-MM-DD HH:MM:SS"
+	echo ""
+	echo "\t-t TICKER\t\tShow only trades of selected ticker. If there are more -t options, show trades of every selected tickers."
+	echo ""
+	echo "\t-w WIDTH\t\tWhen the graphs are showed it set their width, so it set length of longest row to width."
+    echo "\t\t\t\t\tWIDTH has to be positive integer."
+	echo "\t\t\t\t\tIf there are more than one -w option, it is fault."
+	echo ""
+	echo "${bold}HELP${normal}"
+	echo "\t-h help message\tPrint this message. (same as --help)"
+	echo ""
+	echo "\t--help help message\tPrint this message. (same as -h)"
+	echo ""
+	echo "${bold}AUTHOR${normal}"
+	echo "\tWritten by Adam Dzurilla."
+}
+
+print_error_message()
+{
+	if [ $# -gt 0 ]; then
+		echo $1
+	else
+		echo "Scrypt unfortunately ran into an error :("
+	fi
+	exit 1;
+}
+
+print_list_tick()
+{
+	eval $READ_FILTERED | awk -F ';' '{printf $2 "\n"}' | sort -nk1 | uniq
+}
+
+print_profit()
+{
+	eval $READ_FILTERED | awk -F ';' '
+	# It return result * 100
+	function multiple(num1, num2){
+		a = split(num1, dec, ".")
+		sum=num1*num2*100
+		if(a==2) sum += dec[2]*num2
+		return sum
+	}
+	BEGIN{profit=0.00}
+	{
+		if($3=="sell")
+			profit+=multiple($4,$6)
+		else
+			profit-=multiple($4,$6)
+	}
+	END{printf ("%.2f\n", profit/100)}
+	'
+}
+
+print_pos()
+{
+	eval $READ_FILTERED | awk -F ';' '
+	# It return result * 100
+	function multiple(num1, num2){
+		a = split(num1, dec, ".")
+		sum=num1*num2*100
+		if(a==2) {sum += dec[2]*num2}
+		return sum
+	}
+	BEGIN{longest_item=0}
+	{
+		if($3=="sell")
+			list[$2]-=$6
+		else
+			list[$2]+=$6
+
+		if($1>ldate[$2])
+		{
+			lprice[$2]=$4
+			ldate[$2]=$1
+		}
+	}
+	END{
+		for(item in list)			# Cycle to get longest item between prices
+		{
+			price=int(multiple(lprice[item], list[item])/100)
+			if(length(price)+3>longest_item)longest_item=length(price)+3
+		}
+		for (item in list) {	# Write each item
+			printf item
+			for (i=1;i<=10-length(item);i++) {printf " "}
+			printf ": "
+			length_price=length(int(multiple(lprice[item], list[item])/100))+3
+			for(i=1;i<=(longest_item-length_price);i++) {printf " "}
+			printf ("%.2f\n", multiple(lprice[item], list[item])/100)
+		}
+	}
+	' | sort -nk3 -r
+}
+
+print_last_price()
+{
+	eval $READ_FILTERED | awk -F ';' '
+	BEGIN{longest_item=0}
+	{
+		lprice[$2]=$4
+	}
+	END{
+		for(item in lprice){if(length(lprice[item])>longest_item) longest_item=length(lprice[item])}
+		for(item in lprice){
+			printf item
+			for(i=1;i<=10-length(item);i++) {printf " "}
+			printf ": "
+			for(i=1;i<=longest_item-length(lprice[item]);i++) {printf " "}
+			printf lprice[item] "\n"
+		}
+	}
+	' | sort -nk1
+}
+
+print_hist_ord()
+{
+	eval $READ_FILTERED | awk -v width="$WIDTH" -F ';' '
+	BEGIN{longest_item=0; final_hashtags=""}
+	{
+		total[$2]+=1
+		if(total[$2]>longest_item) longest_item=total[$2]
+	}
+	END{
+		if(width==-1)
+			final_hashtags="#"
+		else
+			for(i=1;i<=(width/longest_item);i++) {final_hashtags=("#" final_hashtags)}
+
+		for(item in total){
+			printf item
+			for(i=1;i<=10-length(item);i++) {printf " "}
+			printf ": "
+			for(i=1;i<=total[item];i++) {printf final_hashtags}
+			printf "\n"
+		}
+	}
+	' | sort -nk1
+}
+
+print_graph_pos()
+{
+	eval $READ_FILTERED | awk -v width="$WIDTH" -F ';' '
+	# Return result * 100
+	function multiple(num1, num2){
+		a = split(num1, dec, ".")
+		sum=num1*num2*100
+		if(a==2) {sum += dec[2]*num2}
+		return sum
+	}
+	function abs(num){
+		if(num<0)
+			return num*(-1)
+		else
+			return num
+	}
+	BEGIN{symbol=""; value_for_symbol=0; greatest_item=0.00}
+	{
+		if($3=="sell")
+			list[$2]-=$6
+		else
+			list[$2]+=$6
+		lprice[$2]=$4
+	}
+	END{
+		for(item in list) 
+		{
+			value = abs(multiple(lprice[item], list[item]))
+			if (value>greatest_item ) greatest_item=value
+		}
+		if(width==-1)
+			value_for_symbol=1000.00
+		else
+			value_for_symbol=greatest_item/100/width
+
+		for(item in list)
+		{
+			printf item 
+			for (i=1;i<=10-length(item);i++) {printf " "}
+			printf ": "
+			if(list[item]<0) {symbol="!"} else {symbol="#"}
+			count = abs((multiple(lprice[item], list[item])/100/value_for_symbol))
+			for(i=1;i<=count;i++){printf symbol}
+			printf "\n"
+		}
+	}
+	' | sort -nk1
+}
+
+COMMAND=""
+WIDTH=-1
+TICKERS=""
+A_DATETIME='0000-00-00 00:00:00'
+B_DATETIME='9999-12-31 23:59:59'
+LOG_FILES=""
+GZ_FILES=""
+
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+	-h | --help)
+		print_help
+		exit 0
+		;;
+	list-tick | profit | pos | last-price | hist-ord | graph-pos)
+		# Setting command, If there is more commands then print error
+		if [ -z "$COMMAND" ]; then
+			COMMAND="$1"
+		else
+			print_error_message "Multiple command options"
+		fi
+		shift
+		;;
+	-w)
+		# Check if width was select
+		if [ $WIDTH -gt -1 ]; then
+			print_error_message "Multiple width options"
+		fi
+		WIDTH=$2
+		shift
+		shift
+		;;
+	-t)
+		# Check if ticker is already in list
+		res=0
+		for item in $TICKERS; do
+			if [ $item = $2 ];then
+				res=1
+			fi	
+		done
+		if [ $res -eq 0 ]; then
+			# Check if is it first ticker due blankspace
+			if [ -z "$TICKERS" ]; then
+				TICKERS="$2"
+			else
+				TICKERS="$TICKERS|$2"
+			fi
+		fi
+		shift
+		shift
+		;;
+	-a)
+		if [ "$A_DATETIME" \< "$2" ]; then
+			A_DATETIME=$2
+		fi
+		shift
+		shift
+		;;
+	-b)
+		if [ "B_DATETIME" \> "$2" ]; then
+			B_DATETIME=$2
+		fi
+		shift
+		shift
+		;;
+	*.log)
+		if [ -z "$LOG_FILES" ]; then
+			LOG_FILES="$1"
+		else
+			LOG_FILES="$LOG_FILES $1"
+		fi
+		shift
+		;;
+	*.gz)
+		if [ -z "$GZ_FILES" ]; then
+			GZ_FILES="$1"
+		else
+			GZ_FILES="$GZ_FILES $1"
+		fi
+		shift
+		;;
+	*)
+		print_error_message "Wrong parameter"
+		shift
+		;;
+	esac
+done
+
+if [ -z $GZ_FILES ]; then
+	READ_INPUT="cat $LOG_FILES"
+else
+	READ_INPUT="gzip -d -c $GZ_FILES | cat $LOG_FILES"
+fi
+
+TICK_FILTER="grep -E \"^.*;($TICKERS)\""
+READ_FILTERED="$READ_INPUT | awk -F ';' '{if(\$1>\"$A_DATETIME\" && \$1<\"$B_DATETIME\") {print \$0}}' | $TICK_FILTER"
+
+case "$COMMAND" in
+	list-tick)
+		print_list_tick
+		;;
+	profit)
+		print_profit
+		;;
+	pos)
+		print_pos
+		;;
+	last-price)
+		print_last_price
+		;;
+	hist-ord)
+		print_hist_ord
+		;;
+	graph-pos)
+		print_graph_pos
+		;;
+	*)
+		eval $READ_FILTERED | awk -F ';' '{print}' | sort -nk1
+		;;
+
+esac
